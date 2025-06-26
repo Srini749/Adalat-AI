@@ -1,104 +1,258 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
-import { startRecording, stopRecording } from '../native/AudioModule';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, FlatList, SafeAreaView, ActivityIndicator } from 'react-native';
+// Import the new utility functions for recording
+import { startRecording, stopRecording, getRecordings, playRecording, stopPlayback, getPlaybackStatus } from '../utils/audioUtils';
+// Import the new Waveform component
+import Waveform from '../components/Waveform';
+import Share from 'react-native-share';
+import { Platform } from 'react-native';
+
+const getRecordingPath = (fileName) => {
+  if (Platform.OS === 'ios') {
+    // iOS: Documents directory
+    return `${RNFS.DocumentDirectoryPath}/${fileName}`;
+  } else {
+    // Android: External files directory
+    return `${RNFS.ExternalDirectoryPath}/${fileName}`;
+  }
+};
 
 // RecordScreen: Main screen for audio recording UI
 const RecordScreen = () => {
   // State to track if recording is active
   const [isRecording, setIsRecording] = useState(false);
-  // State to store the last recorded file path
-  const [lastFilePath, setLastFilePath] = useState(null);
+  // State to show feedback to the user (e.g., status, errors, or file path)
+  const [statusMessage, setStatusMessage] = useState(
+    'Press the button to start recording',
+  );
+  const [recordings, setRecordings] = useState([]);
+  const [playingFile, setPlayingFile] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [playbackProgress, setPlaybackProgress] = useState({ position: 0, duration: 0 });
+  const progressInterval = useRef(null);
+
+  // Fetch recordings when the component mounts
+  useEffect(() => {
+    fetchRecordings();
+    return () => {
+      stopPlayback(); // Stop playback when unmounting
+      clearInterval(progressInterval.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (playingFile) {
+      // Start polling playback status
+      progressInterval.current = setInterval(async () => {
+        const status = await getPlaybackStatus();
+        setPlaybackProgress(status);
+        // If playback finished, reset
+        if (status.duration > 0 && status.position >= status.duration) {
+          setPlayingFile(null);
+          setPlaybackProgress({ position: 0, duration: 0 });
+          clearInterval(progressInterval.current);
+        }
+      }, 200);
+    } else {
+      setPlaybackProgress({ position: 0, duration: 0 });
+      clearInterval(progressInterval.current);
+    }
+    return () => clearInterval(progressInterval.current);
+  }, [playingFile]);
+
+  const fetchRecordings = async () => {
+    setIsLoading(true);
+    const files = await getRecordings();
+    setRecordings(files);
+    setIsLoading(false);
+  };
 
   // Handler for toggling recording state
   const handleRecordPress = async () => {
-    if (!isRecording) {
-      // Start recording
+    if (isRecording) {
+      // Stop the recording
       try {
-        const result = await startRecording();
-        setIsRecording(true);
-        setLastFilePath(result.filePath);
+        await stopRecording();
+        setIsRecording(false);
+        // Update status to show the saved file path
+        setStatusMessage('Recording saved!');
+        // Refresh the list of recordings
+        fetchRecordings();
       } catch (error) {
-        Alert.alert('Error', error.message || 'Failed to start recording');
+        // If stopping fails, update the UI accordingly
+        setIsRecording(false);
+        setStatusMessage(`Error: ${error.message}`);
       }
     } else {
-      // Stop recording
+      // Start a new recording
       try {
-        const result = await stopRecording();
-        setIsRecording(false);
-        setLastFilePath(result.filePath);
-        Alert.alert('Recording Stopped', `Audio saved to: ${result.filePath}`);
+        await startRecording();
+        setIsRecording(true);
+        // Clear status message when recording starts
+        setStatusMessage('');
       } catch (error) {
-        Alert.alert('Error', error.message || 'Failed to stop recording');
+        // If starting fails, update the UI accordingly
+        setIsRecording(false);
+        setStatusMessage(`Error: ${error.message}`);
       }
     }
   };
 
-  return (
-    <View style={styles.container}>
-      {/* Title */}
-      <Text style={styles.title}>Audio Recorder</Text>
+  const handlePlayPause = async (fileName) => {
+    if (playingFile === fileName) {
+      await stopPlayback();
+      setPlayingFile(null);
+    } else {
+      await stopPlayback();
+      await playRecording(fileName);
+      setPlayingFile(fileName);
+    }
+  };
 
-      {/* Placeholder for waveform visualization */}
-      <View style={styles.waveformPlaceholder}>
-        <Text style={styles.waveformText}>[Waveform Visualization]</Text>
+  const handleShare = async (fileName) => {
+    try {
+      // Use the correct path for the platform
+      let filePath;
+      if (Platform.OS === 'ios') {
+        filePath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+      } else {
+        filePath = `${RNFS.ExternalDirectoryPath}/${fileName}`;
+      }
+      await Share.open({ url: `file://${filePath}` });
+    } catch (error) {
+      setStatusMessage('Could not share file.');
+    }
+  };
+
+  const formatTime = (seconds) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  // Render item for the recordings list
+  const renderRecording = ({ item }) => {
+    const isPlaying = playingFile === item;
+    const progress = isPlaying && playbackProgress.duration > 0
+      ? playbackProgress.position / playbackProgress.duration
+      : 0;
+    return (
+      <View style={styles.recordingItem}>
+        <Text style={styles.recordingText}>{item}</Text>
+        {isPlaying && (
+          <View style={styles.progressContainer}>
+            <View style={styles.progressBarBg}>
+              <View style={[styles.progressBar, { width: `${progress * 100}%` }]} />
+            </View>
+            <Text style={styles.progressText}>
+              {formatTime(playbackProgress.position)} / {formatTime(playbackProgress.duration)}
+            </Text>
+          </View>
+        )}
+        <View style={styles.recordingActions}>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => handlePlayPause(item)}
+          >
+            <Text style={styles.actionButtonText}>
+              {isPlaying ? 'Pause' : 'Play'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => handleShare(item)}
+          >
+            <Text style={styles.actionButtonText}>Share</Text>
+          </TouchableOpacity>
+        </View>
       </View>
+    );
+  };
 
-      {/* Record/Stop button */}
-      <TouchableOpacity
-        style={[styles.recordButton, isRecording ? styles.stopButton : styles.startButton]}
-        onPress={handleRecordPress}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.buttonText}>
-          {isRecording ? 'Stop Recording' : 'Start Recording'}
-        </Text>
-      </TouchableOpacity>
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.container}>
+        {/* Title */}
+        <Text style={styles.title}>Audio Recorder</Text>
 
-      {/* Show last file path if available */}
-      {lastFilePath && !isRecording && (
-        <Text style={styles.filePathText}>Last file: {lastFilePath}</Text>
-      )}
-    </View>
+        {/* Container for waveform and status messages */}
+        <View style={styles.statusContainer}>
+          <Waveform isRecording={isRecording} />
+          {/* Only show status text when not recording */}
+          {!isRecording && (
+            <Text style={styles.statusText}>{statusMessage}</Text>
+          )}
+        </View>
+
+        {/* Record/Stop button */}
+        <TouchableOpacity
+          style={[styles.recordButton, isRecording ? styles.stopButton : styles.startButton]}
+          onPress={handleRecordPress}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.buttonText}>
+            {isRecording ? 'Stop Recording' : 'Start Recording'}
+          </Text>
+        </TouchableOpacity>
+
+        {/* List of saved recordings */}
+        <Text style={styles.listHeader}>Saved Recordings</Text>
+        {isLoading ? (
+          <ActivityIndicator size="large" color="#10ac84" />
+        ) : (
+          <FlatList
+            data={recordings}
+            renderItem={renderRecording}
+            keyExtractor={(item) => item}
+            style={styles.list}
+            ListEmptyComponent={<Text style={styles.emptyText}>No recordings yet</Text>}
+          />
+        )}
+      </View>
+    </SafeAreaView>
   );
 };
 
 // Styles for the screen
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#f5f6fa',
+  },
   container: {
     flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f5f6fa',
     padding: 24,
   },
   title: {
     fontSize: 28,
     fontWeight: 'bold',
-    marginBottom: 40,
     color: '#222f3e',
+    marginTop: 20,
+    marginBottom: 20,
   },
-  waveformPlaceholder: {
+  statusContainer: {
     width: '100%',
-    height: 80,
-    backgroundColor: '#d1d8e0',
+    minHeight: 120, // Increased height to accommodate text below waveform
+    backgroundColor: '#e9ecef',
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 48,
+    padding: 16,
   },
-  waveformText: {
-    color: '#8395a7',
+  statusText: {
+    color: '#222f3e',
     fontSize: 16,
+    textAlign: 'center',
+    marginTop: 10, // Add some space below the static waveform
   },
   recordButton: {
+    marginTop: 30,
+    marginBottom: 30,
     paddingVertical: 18,
     paddingHorizontal: 36,
     borderRadius: 32,
     elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
   },
   startButton: {
     backgroundColor: '#10ac84',
@@ -110,13 +264,73 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 18,
     fontWeight: 'bold',
-    letterSpacing: 1,
   },
-  filePathText: {
-    marginTop: 24,
+  listHeader: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#222f3e',
+    alignSelf: 'flex-start',
+    marginBottom: 10,
+  },
+  list: {
+    width: '100%',
+  },
+  recordingItem: {
+    backgroundColor: '#fff',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  recordingText: {
+    fontSize: 16,
     color: '#576574',
-    fontSize: 14,
+  },
+  emptyText: {
     textAlign: 'center',
+    marginTop: 20,
+    color: '#8395a7',
+  },
+  recordingActions: {
+    flexDirection: 'row',
+    marginTop: 10,
+  },
+  actionButton: {
+    backgroundColor: '#10ac84',
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    marginRight: 10,
+  },
+  actionButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  progressContainer: {
+    width: '100%',
+    marginTop: 8,
+    marginBottom: 4,
+    alignItems: 'center',
+  },
+  progressBarBg: {
+    width: '100%',
+    height: 6,
+    backgroundColor: '#e9ecef',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: 6,
+    backgroundColor: '#10ac84',
+    borderRadius: 3,
+  },
+  progressText: {
+    fontSize: 12,
+    color: '#576574',
+    marginTop: 2,
+    alignSelf: 'flex-end',
   },
 });
 
