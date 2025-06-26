@@ -14,7 +14,7 @@ function App() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <NewAppScreen templateFileName="App.tsx" />
+      <NewAppScreen templateFileName="App.js" />
     </View>
   );
 }
@@ -25,4 +25,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default App;
+export default App; 
