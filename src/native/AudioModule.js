@@ -26,4 +26,36 @@ export async function startRecording() {
 
 export async function stopRecording() {
   return AudioModule.stopRecording();
+}
+
+export async function getRecordings() {
+  return AudioModule.getRecordings();
+}
+
+export async function playRecording(fileName) {
+  return AudioModule.playRecording(fileName);
+}
+
+export async function stopPlayback() {
+  return AudioModule.stopPlayback();
+}
+
+export async function getPlaybackStatus() {
+  return AudioModule.getPlaybackStatus();
+}
+
+export async function deleteRecording(fileName) {
+  return AudioModule.deleteRecording(fileName);
+}
+
+export async function checkNotificationSupport() {
+  return AudioModule.checkNotificationSupport();
+}
+
+export async function checkAudioPermission() {
+  return AudioModule.checkAudioPermission();
+}
+
+export async function checkMicrophoneAvailable() {
+  return AudioModule.checkMicrophoneAvailable();
 } 

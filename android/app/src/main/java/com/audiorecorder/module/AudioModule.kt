@@ -12,6 +12,17 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.util.*
 import kotlin.concurrent.thread
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import android.Manifest
 
 class AudioModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
 
@@ -43,36 +54,178 @@ class AudioModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
         return File(storageDir, "recording_${timestamp}.pcm")
     }
 
-    @ReactMethod
-    fun startRecording(promise: Promise) {
-        if (isRecording) {
-            promise.reject("record_error", "Already recording")
-            return
-        }
-
+    private fun startForegroundNotification() {
         try {
-            val file = getRecordingFile()
-            filePath = file.absolutePath
+            val context = reactApplicationContext
+            val intent = Intent(context, AudioRecordingService::class.java)
+            
+            // Check if we can start a foreground service
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("AudioModule", "Failed to start foreground notification: ${e.message}", e)
+            // Don't throw the exception - recording can continue without notification
+        }
+    }
 
-            // Note: RECORD_AUDIO permission is required and should be handled in AndroidManifest.xml
-            // and requested at runtime by the JS side if needed.
-            audioRecord = AudioRecord(
+    private fun stopForegroundNotification() {
+        try {
+            val context = reactApplicationContext
+            val intent = Intent(context, AudioRecordingService::class.java)
+            context.stopService(intent)
+        } catch (e: Exception) {
+            android.util.Log.e("AudioModule", "Failed to stop foreground notification: ${e.message}", e)
+            // Don't throw the exception - this is cleanup
+        }
+    }
+
+    @ReactMethod
+    fun checkNotificationSupport(promise: Promise) {
+        try {
+            val context = reactApplicationContext
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            
+            val isSupported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                notificationManager.areNotificationsEnabled()
+            } else {
+                true // Pre-Android 8, notifications are always enabled
+            }
+            
+            promise.resolve(isSupported)
+        } catch (e: Exception) {
+            android.util.Log.e("AudioModule", "Failed to check notification support: ${e.message}", e)
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun checkAudioPermission(promise: Promise) {
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Manifest.permission.RECORD_AUDIO
+        } else {
+            "android.permission.RECORD_AUDIO"
+        }
+        
+        val granted = ContextCompat.checkSelfPermission(reactApplicationContext, permission) == PackageManager.PERMISSION_GRANTED
+        promise.resolve(granted)
+    }
+
+    @ReactMethod
+    fun checkMicrophoneAvailable(promise: Promise) {
+        try {
+            // Check if we can create a temporary AudioRecord to test microphone availability
+            val testAudioRecord = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
                 SAMPLE_RATE,
                 CHANNEL_CONFIG_RECORD,
                 AUDIO_FORMAT,
                 BUFFER_SIZE
             )
+            
+            val isAvailable = testAudioRecord.state == AudioRecord.STATE_INITIALIZED
+            testAudioRecord.release()
+            
+            promise.resolve(isAvailable)
+        } catch (e: Exception) {
+            android.util.Log.e("AudioModule", "Failed to check microphone availability: ${e.message}", e)
+            promise.resolve(false)
+        }
+    }
 
-            audioRecord?.startRecording()
+    @ReactMethod
+    fun startRecording(promise: Promise) {
+        if (isRecording) {
+            promise.reject("record_error", "Already recording")
+            return
+        }
+        
+        // Check audio permission first
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Manifest.permission.RECORD_AUDIO
+        } else {
+            "android.permission.RECORD_AUDIO"
+        }
+        
+        if (ContextCompat.checkSelfPermission(reactApplicationContext, permission) != PackageManager.PERMISSION_GRANTED) {
+            promise.reject("permission_denied", "Microphone permission not granted")
+            return
+        }
+        
+        // Check if microphone is available
+        try {
+            val testAudioRecord = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                CHANNEL_CONFIG_RECORD,
+                AUDIO_FORMAT,
+                BUFFER_SIZE
+            )
+            
+            if (testAudioRecord.state != AudioRecord.STATE_INITIALIZED) {
+                testAudioRecord.release()
+                promise.reject("record_error", "Microphone is not available or being used by another app")
+                return
+            }
+            testAudioRecord.release()
+        } catch (e: Exception) {
+            promise.reject("record_error", "Microphone is not available: ${e.message}")
+            return
+        }
+        
+        try {
+            val file = getRecordingFile()
+            filePath = file.absolutePath
+            
+            // Get audio manager and set audio mode
+            val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val originalMode = audioManager.mode
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            
+            // Create AudioRecord with error checking
+            val audioRecordTemp = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                CHANNEL_CONFIG_RECORD,
+                AUDIO_FORMAT,
+                BUFFER_SIZE
+            )
+            
+            // Check if AudioRecord was created successfully
+            if (audioRecordTemp.state != AudioRecord.STATE_INITIALIZED) {
+                audioRecordTemp.release()
+                audioManager.mode = originalMode
+                promise.reject("record_error", "Failed to initialize AudioRecord")
+                return
+            }
+            
+            audioRecord = audioRecordTemp
+            
+            // Start recording with error handling
+            try {
+                audioRecord?.startRecording()
+            } catch (e: IllegalStateException) {
+                audioRecord?.release()
+                audioRecord = null
+                audioManager.mode = originalMode
+                promise.reject("record_error", "Failed to start recording: ${e.message}", e)
+                return
+            }
+            
             isRecording = true
-
+            startForegroundNotification()
             recordingThread = thread(start = true) {
                 writeAudioDataToFile(file)
             }
             promise.resolve(Arguments.createMap().apply { putString("filePath", filePath) })
         } catch (e: Exception) {
-            promise.reject("record_error", "Failed to start recording", e)
+            // Clean up on error
+            audioRecord?.release()
+            audioRecord = null
+            isRecording = false
+            promise.reject("record_error", "Failed to start recording: ${e.message}", e)
         }
     }
 
@@ -99,16 +252,25 @@ class AudioModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
             promise.reject("not_recording", "No active recording to stop")
             return
         }
-
         try {
             isRecording = false
             recordingThread.join() // Wait for the thread to finish writing
             audioRecord?.stop()
             audioRecord?.release()
             audioRecord = null
+            
+            // Restore audio mode
+            try {
+                val audioManager = reactApplicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                audioManager.mode = AudioManager.MODE_NORMAL
+            } catch (e: Exception) {
+                android.util.Log.w("AudioModule", "Failed to restore audio mode: ${e.message}")
+            }
+            
+            stopForegroundNotification()
             promise.resolve(Arguments.createMap().apply { putString("filePath", filePath) })
         } catch (e: Exception) {
-            promise.reject("stop_error", "Failed to stop recording", e)
+            promise.reject("stop_error", "Failed to stop recording: ${e.message}", e)
         }
     }
 
@@ -213,6 +375,23 @@ class AudioModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaM
             promise.resolve(Arguments.createMap().apply { putBoolean("stopped", true) })
         } else {
             promise.resolve(Arguments.createMap().apply { putBoolean("stopped", false) })
+        }
+    }
+
+    // Delete a recording by file name
+    @ReactMethod
+    fun deleteRecording(fileName: String, promise: Promise) {
+        try {
+            val storageDir = reactApplicationContext.getExternalFilesDir(null)
+            val file = File(storageDir, fileName)
+            if (file.exists()) {
+                val deleted = file.delete()
+                promise.resolve(deleted)
+            } else {
+                promise.resolve(false)
+            }
+        } catch (e: Exception) {
+            promise.reject("delete_error", "Failed to delete recording: ${e.message}", e)
         }
     }
 } 

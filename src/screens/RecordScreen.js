@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, SafeAreaView, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, FlatList, SafeAreaView, ActivityIndicator, Platform } from 'react-native';
 // Import the new utility functions for recording
-import { startRecording, stopRecording, getRecordings, playRecording, stopPlayback, getPlaybackStatus } from '../utils/audioUtils';
+import { startRecording, stopRecording, getRecordings, playRecording, stopPlayback, getPlaybackStatus, deleteRecording, convertPcmToMp3 } from '../utils/audioUtils';
 // Import the new Waveform component
 import Waveform from '../components/Waveform';
 import Share from 'react-native-share';
-import { Platform } from 'react-native';
+import RNFS from 'react-native-fs';
 
 const getRecordingPath = (fileName) => {
   if (Platform.OS === 'ios') {
@@ -111,16 +111,36 @@ const RecordScreen = () => {
 
   const handleShare = async (fileName) => {
     try {
-      // Use the correct path for the platform
       let filePath;
       if (Platform.OS === 'ios') {
         filePath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
       } else {
         filePath = `${RNFS.ExternalDirectoryPath}/${fileName}`;
       }
+      const exists = await RNFS.exists(filePath);
+      if (!exists) {
+        setStatusMessage('File does not exist.');
+        return;
+      }
       await Share.open({ url: `file://${filePath}` });
     } catch (error) {
       setStatusMessage('Could not share file.');
+    }
+  };
+
+  const handleDelete = async (fileName) => {
+    const deleted = await deleteRecording(fileName);
+    if (deleted) {
+      setStatusMessage('Recording deleted.');
+      // Remove the deleted item from the list without re-fetching all
+      setRecordings((prev) => prev.filter((f) => f !== fileName));
+      // If the deleted file was playing, stop playback
+      if (playingFile === fileName) {
+        await stopPlayback();
+        setPlayingFile(null);
+      }
+    } else {
+      setStatusMessage('Could not delete recording.');
     }
   };
 
@@ -138,7 +158,12 @@ const RecordScreen = () => {
       : 0;
     return (
       <View style={styles.recordingItem}>
-        <Text style={styles.recordingText}>{item}</Text>
+        <View style={styles.recordingHeader}>
+          <Text style={styles.recordingText}>{item}</Text>
+          <TouchableOpacity onPress={() => handleDelete(item)} style={styles.deleteButton}>
+            <Text style={styles.deleteButtonText}>×</Text>
+          </TouchableOpacity>
+        </View>
         {isPlaying && (
           <View style={styles.progressContainer}>
             <View style={styles.progressBarBg}>
@@ -171,8 +196,11 @@ const RecordScreen = () => {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      {/* iOS in-app status bar indicator */}
+      {Platform.OS === 'ios' && isRecording && (
+        <View style={styles.iosStatusBarIndicator} />
+      )}
       <View style={styles.container}>
-        {/* Title */}
         <Text style={styles.title}>Audio Recorder</Text>
 
         {/* Container for waveform and status messages */}
@@ -331,6 +359,35 @@ const styles = StyleSheet.create({
     color: '#576574',
     marginTop: 2,
     alignSelf: 'flex-end',
+  },
+  recordingHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  deleteButton: {
+    marginLeft: 10,
+    backgroundColor: '#ee5253',
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    lineHeight: 22,
+  },
+  iosStatusBarIndicator: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 8,
+    backgroundColor: '#ff3b30',
+    zIndex: 100,
   },
 });
 

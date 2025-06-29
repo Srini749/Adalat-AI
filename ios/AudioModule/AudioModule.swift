@@ -158,6 +158,57 @@ class AudioModule: NSObject {
         return wavData
     }
 
+    // Delete a recording by file name
+    @objc func deleteRecording(_ fileName: NSString, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        let fileURL = getDocumentsDirectory().appendingPathComponent(fileName as String)
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+                resolve(true)
+            } else {
+                resolve(false)
+            }
+        } catch {
+            reject("delete_error", "Failed to delete recording", error)
+        }
+    }
+
+    // Check if notifications are supported
+    @objc func checkNotificationSupport(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        // On iOS, local notifications are always supported
+        resolve(true)
+    }
+
+    // Check audio permission
+    @objc func checkAudioPermission(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        let recordingSession = AVAudioSession.sharedInstance()
+        switch recordingSession.recordPermission {
+        case .granted:
+            resolve(true)
+        case .denied:
+            resolve(false)
+        case .undetermined:
+            // Request permission
+            recordingSession.requestRecordPermission { allowed in
+                resolve(allowed)
+            }
+        @unknown default:
+            resolve(false)
+        }
+    }
+
+    // Check if microphone is available
+    @objc func checkMicrophoneAvailable(_ resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        let recordingSession = AVAudioSession.sharedInstance()
+        do {
+            try recordingSession.setCategory(.playAndRecord, mode: .default)
+            try recordingSession.setActive(true)
+            resolve(true)
+        } catch {
+            resolve(false)
+        }
+    }
+
     // Required for React Native
     @objc static func requiresMainQueueSetup() -> Bool {
         return false
