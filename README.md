@@ -2,7 +2,12 @@
 
 A React Native audio recording application with native Android and iOS implementations, featuring real-time recording, playback, file management, and local notifications.
 
+## Screen Recording
+
+https://www.dropbox.com/scl/fi/ewknh5l7x9hviyg0qbm43/AdalatAI.mp4?rlkey=b9pran8mbvvv599uca9kw3co5&st=7fbkr622&dl=0
+
 ## 🎵 Features
+
 
 ### Core Recording Features
 - **High-Quality Audio Recording**: PCM format recording at 44.1kHz, 16-bit, mono
